@@ -11,3 +11,7 @@ __pycache__/
 
 # Per-run dialectic artifacts (.md docs + run_log.csv per run)
 runs/
+
+# Local tooling / duplicate source material (kept on disk, not in the repo)
+.claudeignore
+reference/*.docx

@@ -1,0 +1,11 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+pydantic>=2.6
+python-dotenv>=1.0
+pypdf>=4.0            # PDF evidence extraction in the faithful flow
+
+openai>=1.30           # LLM provider + the embeddings vector half (HILCA_EMBEDDINGS)
+
+# Optional — only if you switch LLM_PROVIDER to anthropic (mock mode needs neither):
+# anthropic>=0.39

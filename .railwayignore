@@ -1,0 +1,8 @@
+# Extras excluded from the Railway upload (.gitignore is respected too).
+# The engine loads reference/HILCA_master_reference_v2.txt — keep that.
+reference/*.docx
+reference/*.uis
+docs/
+test_*.py
+conftest.py
+*.bat

@@ -938,6 +938,65 @@ class TestStreamGuards:
         assert "already completed" in events[0][1]["message"]
 
 
+class TestStreamAttach:
+    """The phone-reconnect path: a second connection to a run this process is
+    (or was) executing attaches to the hub and replays — never an error,
+    never a double engine launch."""
+
+    _events = staticmethod(TestStreamGuards._events)
+
+    def test_attach_replays_and_since_skips(self, store, run_id, reference, monkeypatch):
+        from dialectic_stream import dialectic_event_stream, run_is_live
+        monkeypatch.setenv("LLM_PROVIDER", "mock")
+        monkeypatch.setenv("HILCA_ALLOW_MOCK", "1")
+        monkeypatch.setenv("HILCA_REQUIRE_APPROVAL", "0")
+        # Keep the engine leg fast: stub reference, one round, no final loop.
+        monkeypatch.setenv("HILCA_REFERENCE_PATH", reference)
+        store.set_rounds(run_id, main_rounds=1, final_rounds=0)
+
+        first = self._events(dialectic_event_stream(run_id, store))
+        names = [n for n, _ in first]
+        assert names[-1] == "done" and "error" not in names
+
+        # A fresh connection after completion attaches to the retained hub
+        # and replays the identical history (the old code errored here).
+        second = self._events(dialectic_event_stream(run_id, store))
+        assert [n for n, _ in second] == names
+
+        # ?resume=1 while the hub exists ALSO attaches — this was the exact
+        # "cannot resume it twice" failure from the mobile test.
+        third = self._events(dialectic_event_stream(run_id, store, resume=True))
+        assert [n for n, _ in third] == names
+
+        # Last-Event-ID / ?since= replays only what was missed.
+        tail = self._events(
+            dialectic_event_stream(run_id, store, last_event_id=len(first) - 1))
+        assert [n for n, _ in tail] == ["done"]
+
+        assert run_is_live(run_id) is False  # done hub reports not-live
+
+    def test_attach_to_inflight_hub_bypasses_restart_guard(self, store, run_id, monkeypatch):
+        """While the engine is executing (hub live), a new stream must attach —
+        the old 'already running / cannot resume it twice' dead-end is gone."""
+        import dialectic_stream as ds
+        monkeypatch.setenv("LLM_PROVIDER", "mock")
+        monkeypatch.setenv("HILCA_ALLOW_MOCK", "1")
+        store.set_status(run_id, "dialectic")  # the status that used to refuse
+        hub = ds._RunHub()
+        with ds._hubs_lock:
+            ds._hubs[run_id] = hub
+        try:
+            hub.publish("log", {"seq": 1, "message": "round underway"})
+            assert ds.run_is_live(run_id) is True
+            hub.publish("error", {"message": "terminal for the test"})
+            events = self._events(ds.dialectic_event_stream(run_id, store))
+            assert [e for e, _ in events] == ["log", "error"]
+            assert ds.run_is_live(run_id) is False
+        finally:
+            with ds._hubs_lock:
+                ds._hubs.pop(run_id, None)
+
+
 class TestHumanIntervention:
     def test_feedback_reaches_target_prompts_once(self, store, run_id, reference, tmp_path):
         store.add_intervention(run_id, "CCU", "Focus round 2 on migration costs.")

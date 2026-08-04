@@ -150,19 +150,36 @@
 
   $('#btn-resume').addEventListener('click', function () {
     var id = $('#f-resume-id').value.trim();
-    if (!id) return;
+    if (id) joinRun(id);
+  });
+
+  /* Open an existing run: attach to the live stream when the engine is
+     running (the stream replays the full event history), REST-replay when it
+     is not, and offer a checkpoint resume for interrupted runs. */
+  function joinRun(id) {
     api('GET', '/api/runs/' + id).then(function (run) {
       S.runId = id;
       enterRun(run.topic, run.tags || []);
       if (run.roster && run.roster.length) setRoster(run.roster);
-      replayHistory(run);
-      S.stream = openDialecticStream(id, handlers, { resume: true });
-      toast('Resuming from the last checkpoint…', 'ok');
-    }).catch(function (err) { toast('Cannot resume: ' + err.message, 'err'); });
-  });
+      if (run.live) {
+        S.stream = openDialecticStream(id, handlers);
+        toast('Attached to the live run — replaying…', 'ok');
+      } else if (run.status === 'complete') {
+        replayHistory(run);
+        toast('Run already complete — transcript restored', 'ok');
+      } else {
+        replayHistory(run);
+        S.stream = openDialecticStream(id, handlers, { resume: true });
+        toast('Resuming from the last checkpoint…', 'ok');
+      }
+    }).catch(function (err) { toast('Cannot open run: ' + err.message, 'err'); });
+  }
 
   /* =============================================================== RUN VIEW */
   function enterRun(topic, tags) {
+    // The URL carries the run: a fully reloaded page (mobile browsers kill
+    // background tabs) reattaches to its run instead of landing on intake.
+    try { history.replaceState(null, '', '?attach=' + S.runId); } catch (e) {}
     $('#screen-intake').classList.remove('active');
     $('#screen-run').classList.add('active');
     $('#mi-topic').textContent = topic;
@@ -527,7 +544,7 @@
       .finally(function () { S.pauseBusy = false; });
   });
 
-  $('#btn-new').addEventListener('click', function () { location.reload(); });
+  $('#btn-new').addEventListener('click', function () { location.href = location.pathname; });
 
   $('#ctx-ring').addEventListener('click', function () {
     var ring = $('#ctx-ring');
@@ -635,6 +652,15 @@
       bubble({ who: 'You', kind: 'to ' + d.target, round: d.round, text: d.text, rowCls: 'you-row', expand: true });
     },
 
+    reconnecting: function () {
+      setLive('paused');
+      toast('Connection hiccup — reconnecting to the run…', 'err');
+    },
+    reconnected: function () {
+      setLive('live');
+      toast('Reconnected — caught up on missed events', 'ok');
+    },
+
     paused: function () { setLive('paused'); },
     resumed: function () {
       setLive('live');
@@ -693,16 +719,14 @@
     var b = el('<div class="banner err-banner">' +
       '<div class="b-t">Run interrupted</div>' +
       '<div class="b-s">' + esc(message) + '</div>' +
-      (offerResume ? '<button class="btn" id="btn-ck-resume">⟳ &nbsp;Resume from checkpoint</button>' : '') +
+      (offerResume ? '<button class="btn" id="btn-ck-resume">⟳ &nbsp;Reattach to the run</button>' : '') +
       '</div>');
     append(b);
     var r = $('#btn-ck-resume', b);
     if (r) r.addEventListener('click', function () {
-      b.remove();
-      S.done = false;
-      setLive('live');
-      S.stream = openDialecticStream(S.runId, handlers, { resume: true });
-      toast('Reconnecting from the last checkpoint…');
+      // Full clean rebuild via the ?attach= boot path: attaches to the live
+      // hub when the engine survived, or resumes from the checkpoint if not.
+      location.href = location.pathname + '?attach=' + S.runId;
     });
     scrollToEnd(true);
   }
@@ -811,4 +835,10 @@
     (run.logs || []).slice(-14).forEach(function (l) { feed(l.message); });
     sysPill('— transcript restored —');
   }
+
+  /* ------------------------------------------------------------------ boot */
+  // ?attach=<run_id>: rejoin an existing run (set on every run start, so a
+  // reloaded mobile tab or a shared link lands back inside the mission).
+  var attachId = new URLSearchParams(location.search).get('attach');
+  if (attachId) joinRun(attachId);
 })();

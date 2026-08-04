@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -25,7 +25,7 @@ import controls
 from db import Store
 from dialectic import MAX_AGENTS, TOKEN_BUDGET, render_transcript
 from schemas import IntakeRequest
-from dialectic_stream import dialectic_event_stream
+from dialectic_stream import dialectic_event_stream, run_is_live
 
 FRONTEND = Path(__file__).parent / "frontend"
 
@@ -68,16 +68,25 @@ def create_run(body: IntakeBody) -> JSONResponse:
 
 
 @app.get("/api/runs/{run_id}/stream")
-def stream(run_id: str, resume: bool = False) -> StreamingResponse:
+def stream(run_id: str, request: Request, resume: bool = False, since: int = 0) -> StreamingResponse:
     """SSE: run the faithful dialectic flow, emitting every step as it resolves.
 
+    A stream for a run that is already executing ATTACHES as a viewer (full
+    replay, then live). Reconnecting browsers replay only what they missed:
+    native EventSource retries send Last-Event-ID; manually recreated
+    connections (after a fatal proxy close) pass ?since=<seq> instead.
     `?resume=1` restarts an interrupted run from its last round-boundary
-    checkpoint (master file v2: stateful checkpointing for replayability)
-    instead of refusing — completed rounds are never re-billed."""
+    checkpoint (master file v2: stateful checkpointing) after a process
+    restart — completed rounds are never re-billed."""
     if store.get_run(run_id) is None:
         raise HTTPException(status_code=404, detail="Run not found")
+    try:
+        last_event_id = int(request.headers.get("last-event-id", "0"))
+    except ValueError:
+        last_event_id = 0
+    last_event_id = max(last_event_id, since)
     return StreamingResponse(
-        dialectic_event_stream(run_id, store, resume=resume),
+        dialectic_event_stream(run_id, store, resume=resume, last_event_id=last_event_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -97,6 +106,9 @@ def run_json(run_id: str) -> JSONResponse:
     run["messages"] = store.get_messages(run_id)
     run["logs"] = store.get_logs(run_id)
     run["interventions"] = store.get_interventions(run_id)
+    # True while this process's engine is executing the run: the frontend
+    # attaches to the live stream (full replay) instead of REST reconstruction.
+    run["live"] = run_is_live(run_id)
     return JSONResponse(run)
 
 
